@@ -1,0 +1,81 @@
+services:
+  spark:
+    image: apache/spark:3.5.1
+    container_name: spark-delta
+    user: root
+    environment:
+      - SPARK_MODE=client
+    volumes:
+      - ./data:/opt/data
+      - ./spark/scripts:/opt/scripts
+      - ./input:/opt/input
+      - ./dags:/opt/airflow/dags
+    working_dir: /opt
+    # Aseguramos GX en versión estable 1.x o superior
+    command: >
+      /bin/bash -c "pip3 install delta-spark==3.1.0 great-expectations && sleep infinity"
+
+  postgres:
+    image: postgres:13
+    container_name: airflow-postgres
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  airflow-common: &airflow-common
+    image: apache/airflow:2.7.1
+    user: "${AIRFLOW_UID:-50000}:0"
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+      - AIRFLOW__CORE__FERNET_KEY=''
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__LOGGING_LEVEL=INFO
+      - AIRFLOW_UID=${AIRFLOW_UID:-50000}
+      - _PIP_ADDITIONAL_REQUIREMENTS=delta-spark==3.1.0 great-expectations
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./spark/scripts:/opt/scripts
+      - ./data:/opt/data
+      - ./input:/opt/input
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    ports:
+      - "8080:8080"
+    command: webserver
+    restart: always
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    restart: always
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    command: >
+      bash -c "airflow db migrate &&
+      airflow users create
+      --username airflow
+      --firstname Admin
+      --lastname Admin
+      --role Admin
+      --email admin@example.com
+      --password airflow"
